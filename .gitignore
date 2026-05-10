@@ -1,0 +1,48 @@
+# xmake build output and local state
+build/
+.xmake/
+.cache/
+compile_commands.json
+
+# C/C++ build artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.ipdb
+*.iobj
+
+# Generated dependency and module cache files
+*.d
+*.pcm
+*.ifc
+*.gcm
+
+# Test and coverage output
+Testing/
+CTestTestfile.cmake
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# Editor and IDE local files
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS noise
+.DS_Store
+Thumbs.db
+Desktop.ini
