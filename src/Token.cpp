@@ -1,5 +1,6 @@
 export module Token;
 import std;
+import SourceLocation;
 
 export enum class TokenType {
   EndOfFile,
@@ -15,6 +16,10 @@ export enum class TokenType {
   KwElse,
   KwWhile,
   KwReturn,
+  KwInt,
+  KwString,
+  KwBool,
+  KwVoid,
 
   OpPlus,
   OpMinus,
@@ -28,9 +33,11 @@ export enum class TokenType {
   PuncLeftBrace,
   PuncRightBrace,
   PuncSemicolon,
+  PuncComma,
 };
 
 export struct Token {
   std::string_view value;
   TokenType type;
+  SourceLocation location;
 };
