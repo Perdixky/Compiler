@@ -1,9 +1,7 @@
 module;
 
 #include <cstddef>
-#include <ranges>
 #include <rfl.hpp>
-#include <variant>
 
 export module Parser.LR;
 import std;
@@ -205,6 +203,7 @@ public:
     const NonTerminal AssignStmtNt{"AssignStmt"};
     const NonTerminal DeclStmtNt{"DeclStmt"};
     const NonTerminal BlockStmtNt{"BlockStmt"};
+    const NonTerminal FuncCallStmtNt{"FuncCallStmtNt"};
     const NonTerminal TypeNt{"Type"};
     const NonTerminal IdNt{"Id"};
     const NonTerminal OpNt{"Op"};
@@ -216,6 +215,7 @@ public:
     const Pattern StmtList = Pattern(StmtListNt);
     const Pattern FuncDecl = Pattern(FuncDeclNt);
     const Pattern FuncDeclList = Pattern(FuncDeclListNt);
+    const Pattern FuncCallStmt = Pattern(FuncCallStmtNt);
     const Pattern IfStmt = Pattern(IfStmtNt);
     const Pattern ReturnStmt = Pattern(ReturnStmtNt);
     const Pattern AssignStmt = Pattern(AssignStmtNt);
@@ -266,6 +266,8 @@ public:
 
     Pattern func_decl_list_pattern = eps() | FuncDecl >> FuncDeclList;
 
+    Pattern func_call_stmt_pattern = Id >> left_paren >> right_paren;
+
     Pattern if_stmt_pattern = kw_if >> left_paren >> Expr >> right_paren >> BlockStmt;
 
     rules_.reserve(15);
@@ -277,6 +279,7 @@ public:
     add_rule(StmtListNt, std::move(stmt_list_pattern));
     add_rule(FuncDeclNt, std::move(func_decl_pattern));
     add_rule(FuncDeclListNt, std::move(func_decl_list_pattern));
+    add_rule(FuncCallStmtNt, func_call_stmt_pattern);
     add_rule(IfStmtNt, std::move(if_stmt_pattern));
     add_rule(ReturnStmtNt, std::move(return_stmt_pattern));
     add_rule(AssignStmtNt, std::move(assign_stmt_pattern));
@@ -315,17 +318,6 @@ public:
            });
   }
 
-  auto follow(this const auto& self, NonTerminal& name) -> std::vector<Terminal> {
-    std::ranges::iterator_t<std::vector<SymbolList>> idx;
-    return self.compiled_rules_ | std::views::filter([&](const auto& rule) {
-             idx = std::ranges::find(rule, name);
-             return idx < self.compiled_rules_.end() - 1;
-           }) |
-           std::views::transform([&](const auto& rule) {
-             return self.compiled_rules_[idx + 1];
-           });
-  }
-
   auto first(this const auto& self, const Symbol& name) -> std::vector<Terminal> {
     if (std::holds_alternative<Terminal>(name)) [[unlikely]] {
       return {std::get<Terminal>(name)};
@@ -333,25 +325,35 @@ public:
     std::vector<NonTerminal> first_nonterminals = {std::get<NonTerminal>(name)};
     bool changed;
 
-    std::vector<Terminal> first;
-    first.reserve(self.compiled_rules_.size());
-    do {
-      auto first_symbols = std::ranges::find_if(self.compiled_rules_,
-                                                [&](const CompiledRule& rule) {
-                                                  return rule.lhs == nonterminal;
-                                                }) |
-                           std::views::transform([](const CompiledRule& rule) {
-                             return rule.rhs.front();
-                           });
+    std::vector<Terminal> first_terminals;
+    first_terminals.reserve(self.compiled_rules_.size());
+    while (!first_nonterminals.empty()) {
+      auto first_symbols =
+          std::ranges::find_if(self.compiled_rules_,
+                               [&](const CompiledRule& rule) {
+                                 return std::ranges::any_of(first_nonterminals, [&](const NonTerminal& nonterminal) {
+                                   return nonterminal == rule.lhs;
+                                 });
+                               }) |
+          std::views::transform([](const CompiledRule& rule) {
+            return rule.rhs.front();
+          });
 
-      std::ranges::copy_if(first_symbols, std::back_inserter(first), [&](const Symbol& symbol) {
-        if (std::holds_alternative<Terminal>(symbol) &&
-            std::ranges::find(first, std::get<Terminal>(symbol)) == first.end()) {
-          changed = true;
-          return true;
+      for (const Symbol& symbol : first_symbols) {
+        if (std::holds_alternative<NonTerminal>(symbol)) {
+          auto nonterminal = std::get<NonTerminal>(symbol);
+          if (std::ranges::find(first_nonterminals, nonterminal) == first_nonterminals.end()) {
+            first_nonterminals.push_back(nonterminal);
+          }
+        } else {
+          auto terminal = std::get<Terminal>(symbol);
+          if (std::ranges::find(first_terminals, terminal) == first_terminals.end()) {
+            first_terminals.push_back(terminal);
+          }
         }
-      });
-    } while (changed);
+      }
+    }
+    return first_terminals;
   }
 
 private:
