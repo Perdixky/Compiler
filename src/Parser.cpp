@@ -121,6 +121,12 @@ export struct LiteralNumExpr {
   PRO_DECLARE_ACCEPT(Expr, LiteralNum);
 };
 
+export struct VarExpr {
+  std::string_view name;
+
+  PRO_DECLARE_ACCEPT(Expr, Var);
+};
+
 export struct BinaryExpr : MoveOnly {
   enum class BinaryOp {
     Add,
@@ -256,9 +262,11 @@ public:
     stmt->condition = parseExpr();
     expect(TokenType::PuncRightParen);
 
+    expect(TokenType::PuncLeftBrace);
     stmt->then_branch = parseBlockStmt();
 
     if (match(TokenType::KwElse)) {
+      expect(TokenType::PuncLeftBrace);
       stmt->else_branch = parseBlockStmt();
     }
 
@@ -299,10 +307,18 @@ public:
   }
 
   auto parsePrimary() -> ProExpr {
-    Token cur = expect(TokenType::LiteralNumber);
-    int value;
-    std::from_chars(cur.value.cbegin(), cur.value.cend(), value);
-    return pro::make_proxy<Expr, LiteralNumExpr>(value);
+    if (auto number = match(TokenType::LiteralNumber)) {
+      int value;
+      std::from_chars(number->value.cbegin(), number->value.cend(), value);
+      return pro::make_proxy<Expr, LiteralNumExpr>(value);
+    }
+
+    if (auto identifier = match(TokenType::Identifier)) {
+      return pro::make_proxy<Expr, VarExpr>(identifier->value);
+    }
+
+    Token cur = peek();
+    fatal("Expected expression, but got {} at: {}", cur.value, cur.location.to_string());
   }
 
   auto parseTerm() -> ProExpr {
@@ -320,7 +336,7 @@ public:
     return expr;
   }
 
-  auto parseExpr() -> ProExpr {
+  auto parseAdditive() -> ProExpr {
     ProExpr expr = parseTerm();
     std::vector<TokenType> op_types{TokenType::OpPlus, TokenType::OpMinus};
 
@@ -329,6 +345,27 @@ public:
       binary->left = std::move(expr);
       binary->op = op.value().type == TokenType::OpPlus ? BinaryExpr::BinaryOp::Add : BinaryExpr::BinaryOp::Subtract;
       binary->right = parseTerm();
+      expr = binary;
+    }
+
+    return expr;
+  }
+
+  auto parseExpr() -> ProExpr {
+    ProExpr expr = parseAdditive();
+    std::vector<TokenType> op_types{TokenType::OpLess, TokenType::OpGreater, TokenType::OpEqualEqual};
+
+    while (auto op = match(op_types)) {
+      BinaryExpr* binary = new BinaryExpr;
+      binary->left = std::move(expr);
+      if (op->type == TokenType::OpLess) {
+        binary->op = BinaryExpr::BinaryOp::Less;
+      } else if (op->type == TokenType::OpGreater) {
+        binary->op = BinaryExpr::BinaryOp::Greater;
+      } else {
+        binary->op = BinaryExpr::BinaryOp::Equal;
+      }
+      binary->right = parseAdditive();
       expr = binary;
     }
 

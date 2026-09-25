@@ -1,8 +1,5 @@
 module;
 
-#include <cstddef>
-#include <rfl.hpp>
-
 export module Parser.LR;
 import std;
 import Token;
@@ -27,7 +24,40 @@ export struct NonTerminal {
   }
 };
 
+export template <> struct std::hash<Terminal> {
+  auto operator()(const Terminal& terminal) const -> std::size_t {
+    return terminal.hash();
+  }
+};
+
+export template <> struct std::hash<NonTerminal> {
+  auto operator()(const NonTerminal& nonterminal) const -> std::size_t {
+    return nonterminal.hash();
+  }
+};
+
 export using Symbol = std::variant<Terminal, NonTerminal>;
+
+export inline std::size_t hash_combine(std::size_t a, std::size_t b) {
+  a ^= b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);
+  return a;
+}
+
+namespace {
+
+struct SymbolHash {
+  auto operator()(const Symbol& symbol) const -> std::size_t {
+    const std::size_t index_hash = std::hash<std::size_t>{}(symbol.index());
+    return std::visit(
+        [index_hash](const auto& value) {
+          using Value = std::decay_t<decltype(value)>;
+          return hash_combine(index_hash, std::hash<Value>{}(value));
+        },
+        symbol);
+  }
+};
+
+} // namespace
 
 export class Pattern {
 public:
@@ -270,7 +300,7 @@ public:
 
     Pattern if_stmt_pattern = kw_if >> left_paren >> Expr >> right_paren >> BlockStmt;
 
-    rules_.reserve(15);
+    rules_.reserve(16);
 
     add_rule(ExprNt, std::move(expr_pattern));
     add_rule(DeclNt, std::move(decl_pattern));
@@ -322,38 +352,72 @@ public:
     if (std::holds_alternative<Terminal>(name)) [[unlikely]] {
       return {std::get<Terminal>(name)};
     }
-    std::vector<NonTerminal> first_nonterminals = {std::get<NonTerminal>(name)};
-    bool changed;
 
+    std::unordered_set<NonTerminal> discovered_nonterminals;
+    std::vector<NonTerminal> first_nonterminals;
+    auto add_nonterminal = [&](NonTerminal nonterminal) {
+      if (discovered_nonterminals.insert(nonterminal).second) {
+        first_nonterminals.push_back(std::move(nonterminal));
+      }
+    };
+    add_nonterminal(std::get<NonTerminal>(name));
+
+    std::unordered_set<Terminal> discovered_terminals;
     std::vector<Terminal> first_terminals;
     first_terminals.reserve(self.compiled_rules_.size());
-    while (!first_nonterminals.empty()) {
-      auto first_symbols =
-          std::ranges::find_if(self.compiled_rules_,
-                               [&](const CompiledRule& rule) {
-                                 return std::ranges::any_of(first_nonterminals, [&](const NonTerminal& nonterminal) {
-                                   return nonterminal == rule.lhs;
-                                 });
-                               }) |
-          std::views::transform([](const CompiledRule& rule) {
-            return rule.rhs.front();
-          });
+    for (std::size_t i = 0; i < first_nonterminals.size(); ++i) {
+      const NonTerminal current = first_nonterminals[i];
+      for (const auto& rule : self.findCompiledRules(current)) {
+        if (rule.rhs.empty()) {
+          continue;
+        }
 
-      for (const Symbol& symbol : first_symbols) {
+        const Symbol& symbol = rule.rhs.front();
         if (std::holds_alternative<NonTerminal>(symbol)) {
-          auto nonterminal = std::get<NonTerminal>(symbol);
-          if (std::ranges::find(first_nonterminals, nonterminal) == first_nonterminals.end()) {
-            first_nonterminals.push_back(nonterminal);
-          }
+          add_nonterminal(std::get<NonTerminal>(symbol));
         } else {
-          auto terminal = std::get<Terminal>(symbol);
-          if (std::ranges::find(first_terminals, terminal) == first_terminals.end()) {
-            first_terminals.push_back(terminal);
+          Terminal terminal = std::get<Terminal>(symbol);
+          if (discovered_terminals.insert(terminal).second) {
+            first_terminals.push_back(std::move(terminal));
           }
         }
       }
     }
     return first_terminals;
+  }
+
+  auto first(this const auto& self, std::span<const Symbol> symbols) -> std::vector<Terminal> {
+    std::unordered_set<Terminal> seen_terminals;
+    std::vector<Terminal> discovered_terminals;
+    auto add_terminal = [&](Terminal terminal) {
+      if (seen_terminals.insert(terminal).second) {
+        discovered_terminals.push_back(std::move(terminal));
+      }
+    };
+
+    auto _ = std::ranges::find_if(symbols, [&](const Symbol& symbol) {
+      if (std::holds_alternative<Terminal>(symbol)) {
+        add_terminal(std::get<Terminal>(symbol));
+        return true;
+      }
+      auto nonterminal = std::get<NonTerminal>(symbol);
+      if (!self.canDeriveEmpty(nonterminal)) {
+        for (Terminal terminal : self.first(nonterminal)) {
+          add_terminal(std::move(terminal));
+        }
+        return true;
+      }
+      for (Terminal terminal : self.first(nonterminal)) {
+        add_terminal(std::move(terminal));
+      }
+      return false;
+    });
+    return discovered_terminals;
+  }
+
+  auto canDeriveEmpty(this const auto& self, const NonTerminal& nonterminal) -> bool {
+    std::unordered_set<NonTerminal> set;
+    return self.canDeriveEmpty(nonterminal, set);
   }
 
 private:
@@ -414,6 +478,26 @@ private:
     return result;
   }
 
+  auto canDeriveEmpty(this const auto& self, const NonTerminal& nonterminal, std::unordered_set<NonTerminal>& visiting)
+      -> bool {
+    // 出现循环，无法推导
+    if (!visiting.insert(nonterminal).second) {
+      return false;
+    }
+
+    // 表示存在一个规则，这个规则右边完全不会展开出任何非终结符
+    auto empty = std::ranges::any_of(self.findCompiledRules(nonterminal), [&](const auto& rule) {
+      return std::ranges::all_of(rule.rhs, [&](const auto& symbol) {
+        return std::holds_alternative<NonTerminal>(symbol) &&
+               self.canDeriveEmpty(std::get<NonTerminal>(symbol), visiting);
+      });
+    });
+
+    // 将自己删除
+    visiting.erase(nonterminal);
+    return empty;
+  }
+
 private:
   std::vector<Rule> rules_;
   std::vector<CompiledRule> compiled_rules_;
@@ -432,6 +516,17 @@ public:
     }
   };
 
+  struct ItemHash {
+    auto operator()(const Item& item) const -> std::size_t {
+      std::size_t result = std::hash<std::size_t>{}(item.dot_position_);
+      result = hash_combine(result, std::hash<NonTerminal>{}(item.rule_.lhs));
+      for (const Symbol& symbol : item.rule_.rhs) {
+        result = hash_combine(result, SymbolHash{}(symbol));
+      }
+      return hash_combine(result, std::hash<Terminal>{}(item.expected_));
+    }
+  };
+
   ItemSet() = default;
 
   explicit ItemSet(std::ranges::input_range auto&& items) {
@@ -440,10 +535,12 @@ public:
 
   static auto initial() -> ItemSet {
     return ItemSet{std::views::single(Item{.dot_position_ = 0,
-                                           .rule_ = CompiledRule{
-                                               .lhs = NonTerminal{"Start"},
-                                               .rhs = {NonTerminal{"FuncDeclList"}},
-                                           }})};
+                                           .rule_ =
+                                               CompiledRule{
+                                                   .lhs = NonTerminal{"Start"},
+                                                   .rhs = {NonTerminal{"FuncDeclList"}},
+                                               },
+                                           .expected_ = Terminal{TokenType::EndOfFile}})};
   }
 
   auto begin() {
@@ -468,23 +565,29 @@ public:
 
   auto closure(this ItemSet& self, const Grammar& grammar) -> void {
     self.items_.reserve(self.items_.size() * 2);
+    std::unordered_set<Item, ItemHash> discovered_items(self.items_.begin(), self.items_.end());
     bool changed = false;
     do {
       changed = false;
       for (std::size_t i = 0; i < self.items_.size(); ++i) {
-        const Item& item = self.items_[i];
+        const Item item = self.items_[i];
         if (item.dot_position_ >= item.rule_.rhs.size()) {
           continue;
         }
         const Symbol symbol = item.rule_.rhs[item.dot_position_];
         if (const auto* nonterminal = std::get_if<NonTerminal>(&symbol)) {
           for (const auto& rule : grammar.findCompiledRules(*nonterminal)) {
-            Item new_item{.dot_position_ = 0, .rule_ = rule};
-            if (std::ranges::find_if(self, [&](const auto& item) {
-                  return item == new_item;
-                }) == self.end()) {
-              self.items_.push_back(new_item);
-              changed = true;
+            SymbolList suffix = item.rule_.rhs | std::views::drop(item.dot_position_ + 1) | std::ranges::to<SymbolList>();
+            suffix.push_back(item.expected_);
+            const auto expected = grammar.first(suffix);
+            auto items = expected | std::views::transform([&](const Terminal& terminal) {
+                           return Item{0, rule, terminal};
+                         });
+            for (const auto& new_item : items) {
+              if (discovered_items.insert(new_item).second) {
+                self.items_.push_back(new_item);
+                changed = true;
+              }
             }
           }
         }
@@ -493,22 +596,34 @@ public:
   }
 
   auto operator==(this const auto& self, const auto& other) -> bool {
-    return std::ranges::equal(self, other);
+    if (self.size() != other.size()) {
+      return false;
+    }
+
+    std::unordered_set<Item, ItemHash> other_items(other.begin(), other.end());
+    return std::ranges::all_of(self, [&](const Item& item) {
+      return other_items.contains(item);
+    });
   }
 
 private:
   std::vector<Item> items_;
 };
 
-export template <class Key>
-concept HashableKey = std::equality_comparable<Key> && std::copy_constructible<Key> && requires(const Key& key) {
-  { key.hash() } -> std::convertible_to<std::size_t>;
+struct ItemSetHash {
+  auto operator()(const ItemSet& item_set) const -> std::size_t {
+    std::size_t result = std::hash<std::size_t>{}(item_set.size());
+    for (const auto& item : item_set) {
+      result ^= ItemSet::ItemHash{}(item);
+    }
+    return result;
+  }
 };
 
-export inline std::size_t hash_combine(std::size_t a, std::size_t b) {
-  a ^= b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);
-  return a;
-}
+export template <class Key>
+concept HashableKey = std::equality_comparable<Key> && std::copy_constructible<Key> && requires(const Key& key) {
+  { std::hash<Key>{}(key) } -> std::convertible_to<std::size_t>;
+};
 
 export template <HashableKey SecondKey, std::equality_comparable Value> class Sparse2D {
 public:
@@ -522,7 +637,7 @@ public:
   struct KeyHash {
     std::size_t operator()(const Key& key) const {
       std::size_t h1 = std::hash<std::size_t>{}(key.first);
-      std::size_t h2 = key.second.hash();
+      std::size_t h2 = std::hash<SecondKey>{}(key.second);
       return hash_combine(h1, h2);
     }
   };
@@ -614,20 +729,23 @@ public:
     ItemSet initial_set = ItemSet::initial();
     initial_set.closure(grammar);
     item_sets_.push_back(std::move(initial_set));
+    item_set_indices_.emplace(item_sets_.back(), 0);
     bool changed = false;
     do {
       changed = false;
       for (std::size_t i = 0; i < item_sets_.size(); ++i) {
-        auto next_symbols = item_sets_[i] | std::views::filter([](const auto& item) {
-                              return item.dot_position_ < item.rule_.rhs.size();
-                            }) |
-                            std::views::transform([](const auto& item) {
-                              return item.rule_.rhs[item.dot_position_];
-                            }) |
-                            std::ranges::to<std::vector>();
+        std::unordered_set<Symbol, SymbolHash> discovered_symbols;
+        std::vector<Symbol> next_symbols;
+        for (const auto& item : item_sets_[i]) {
+          if (item.dot_position_ >= item.rule_.rhs.size()) {
+            continue;
+          }
 
-        auto sub = std::ranges::unique(next_symbols);
-        next_symbols.erase(sub.begin(), sub.end());
+          const Symbol& symbol = item.rule_.rhs[item.dot_position_];
+          if (discovered_symbols.insert(symbol).second) {
+            next_symbols.push_back(symbol);
+          }
+        }
 
         for (const Symbol& symbol : next_symbols) {
           const std::size_t old_size = item_sets_.size();
@@ -653,10 +771,7 @@ public:
           if (item.rule_.lhs.name == "Start") {
             action_table[i, Terminal{TokenType::EndOfFile}] = std::make_pair(ActionType::Accept, max);
           } else {
-            for (const auto& [_, tok] : rfl::get_enumerator_array<TokenType>()) {
-              Terminal terminal{tok};
-              action_table[i, terminal] = std::make_pair(ActionType::Reduce, i);
-            }
+            action_table[i, item.expected_] = std::make_pair(ActionType::Reduce, i);
           }
           continue;
         }
@@ -670,6 +785,10 @@ public:
       }
     }
     return {std::move(action_table), std::move(goto_table)};
+  }
+
+  auto itemSets() const -> const std::vector<ItemSet>& {
+    return item_sets_;
   }
 
 private:
@@ -687,14 +806,17 @@ private:
         std::ranges::to<ItemSet>();
 
     result.closure(grammar);
-    if (auto it = std::ranges::find(self.item_sets_, result); it != self.item_sets_.end()) {
-      return static_cast<std::size_t>(it - self.item_sets_.begin());
+    if (auto it = self.item_set_indices_.find(result); it != self.item_set_indices_.end()) {
+      return it->second;
     }
 
+    const std::size_t index = self.item_sets_.size();
     self.item_sets_.push_back(std::move(result));
-    return self.item_sets_.size() - 1;
+    self.item_set_indices_.emplace(self.item_sets_.back(), index);
+    return index;
   }
 
 private:
   std::vector<ItemSet> item_sets_;
+  std::unordered_map<ItemSet, std::size_t, ItemSetHash> item_set_indices_;
 };

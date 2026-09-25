@@ -8,7 +8,7 @@ using namespace boost::ut;
 
 suite<"lexer"> lexer_tests = [] {
   "lexes keywords, identifiers, literals, and punctuation"_test = [] {
-    Lexer lexer{"int add(int lhs, int rhs) { return lhs + rhs; }"};
+    Lexer lexer{"int add(int lhs, int rhs) { return lhs + rhs > 0; }"};
     auto tokens = lexer.lex();
 
     std::vector<TokenType> types;
@@ -31,6 +31,8 @@ suite<"lexer"> lexer_tests = [] {
                         TokenType::Identifier,
                         TokenType::OpPlus,
                         TokenType::Identifier,
+                        TokenType::OpGreater,
+                        TokenType::LiteralNumber,
                         TokenType::PuncSemicolon,
                         TokenType::PuncRightBrace,
                         TokenType::EndOfFile,

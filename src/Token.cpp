@@ -27,6 +27,8 @@ export enum class TokenType {
   OpSlash,
   OpEqual,
   OpEqualEqual,
+  OpLess,
+  OpGreater,
 
   PuncLeftParen,
   PuncRightParen,

@@ -47,4 +47,31 @@ suite<"parser"> parser_tests = [] {
     expect(right.op == BinaryExpr::BinaryOp::Multiply);
     expect(parser.isAtEnd());
   };
+
+  "parses variables and comparison expressions"_test = [] {
+    Lexer lexer{"a > b + 1"};
+    Parser parser{lexer.lex()};
+    auto expr = parser.parseExpr();
+    const auto& compare = proxy_cast<const BinaryExpr&>(*expr);
+
+    expect(compare.op == BinaryExpr::BinaryOp::Greater);
+    const auto& left = proxy_cast<const VarExpr&>(*compare.left);
+    expect(left.name == "a");
+    const auto& right = proxy_cast<const BinaryExpr&>(*compare.right);
+    expect(right.op == BinaryExpr::BinaryOp::Add);
+    expect(parser.isAtEnd());
+  };
+
+  "parses if statements with braced blocks"_test = [] {
+    Lexer lexer{"if (a > b) { return a; }"};
+    Parser parser{lexer.lex()};
+    auto stmt = parser.parseStmt();
+    const auto& if_stmt = proxy_cast<const IfStmt&>(*stmt);
+
+    const auto& condition = proxy_cast<const BinaryExpr&>(*if_stmt.condition);
+    expect(condition.op == BinaryExpr::BinaryOp::Greater);
+    const auto& then_branch = proxy_cast<const BlockStmt&>(*if_stmt.then_branch);
+    expect(then_branch.statements.size() == 1_i);
+    expect(parser.isAtEnd());
+  };
 };

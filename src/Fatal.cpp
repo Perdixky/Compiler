@@ -13,7 +13,6 @@ template <typename... Args> struct fatal_rformat {
   std::source_location location;
 };
 
-
 template <typename... Args> using fatal_format = fatal_rformat<std::type_identity_t<Args>...>;
 
 export template <typename... Args> [[noreturn]] void fatal(fatal_format<Args...> fmt, Args&&... args) {

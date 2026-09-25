@@ -2,6 +2,7 @@
 build/
 .xmake/
 .cache/
+.clice/
 compile_commands.json
 
 # C/C++ build artifacts

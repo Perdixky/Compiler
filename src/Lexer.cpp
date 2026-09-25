@@ -102,6 +102,12 @@ private:
         self.pos++;
         return Token{"=", TokenType::OpEqual, location};
       }
+    case '<':
+      self.pos++;
+      return Token{"<", TokenType::OpLess, location};
+    case '>':
+      self.pos++;
+      return Token{">", TokenType::OpGreater, location};
     case '(':
       self.pos++;
       return Token{"(", TokenType::PuncLeftParen, location};
